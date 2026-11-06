@@ -20,6 +20,8 @@ Linuxでは、PythonのTkinterパッケージが別途必要な場合があり�
 (./.venv/bin/)python integrated_app.py
 ```
 
+Windowsでは `start_gui.bat` をダブルクリックしても起動できます。初回は `.venv` の作成と依存パッケージのインストールを自動で行い、以降はコンソールを出さずにGUIだけを起動します。
+
 `cv2` が見つからない場合は、起動に使ったPython環境にOpenCVが入っていません。セットアップと起動で同じ仮想環境のPythonを使ってください。
 
 ## 操作の流れ

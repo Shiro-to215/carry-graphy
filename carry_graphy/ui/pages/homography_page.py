@@ -40,15 +40,11 @@ if TYPE_CHECKING:
     from ..app import IntegratedApp
 
 
-def build_homography_page(app: IntegratedApp) -> None:
+def _refresh_homography_summary(app: IntegratedApp) -> None:
     assert app.calibration_data is not None
-    scroll = app.begin_page(
-        step_index=2,
-        step_badge="ステップ 3 / 4  ・  必須",
-        title="ホモグラフィの設定",
-        subtitle="歪みを補正する基準画像と、計測する平面の実際の幅・高さを指定します。すでにホモグラフィ行列（.npy / .npz）をお持ちの場合は、そのまま読み込んで完了画面へ進めます。",
-    )
-
+    ui = getattr(app, "_homography_ui", None)
+    if not ui:
+        return
     camera_matrix: np.ndarray = app.calibration_data["camera_matrix"]  # type: ignore[assignment]
     distortion: np.ndarray = app.calibration_data["distortion"]  # type: ignore[assignment]
     width = app.calibration_data["width"]
@@ -56,171 +52,221 @@ def build_homography_page(app: IntegratedApp) -> None:
     rmse = app.calibration_data["rmse"]
     source = str(app.calibration_data.get("source") or "今回の解析結果")
 
-    # ---- Card 0: Loaded calibration summary -----------------------------
     quality = rmse_quality(rmse)
-    quality_badge = {
+    badge_text, badge_tone = {
         "good": ("精度 良好 (< 0.5 px)", "success"),
         "fair": ("精度 標準 (< 1.0 px)", "info"),
         "poor": ("誤差やや大 (≥ 1.0 px)", "warning"),
         None: ("既存データ", "info"),
     }[quality]
-    summary_card = Card(
-        scroll,
-        title="適用中のキャリブレーション情報",
-        badge=quality_badge,
-    )
-    summary_card.grid(row=0, column=0, sticky="ew", pady=(0, t.GAP))
-    for col in range(3):
-        summary_card.body.columnconfigure(col, weight=1, uniform="cal_stat")
 
-    StatTile(
-        summary_card.body, "キャリブレーション解像度", f"{width} × {height} px",
-    ).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+    summary_card: Card = ui["card"]
+    if summary_card.badge_label is not None:
+        bg, _, fg = t.TONES[badge_tone]
+        summary_card.badge_label.configure(text=f" {badge_text} ", fg_color=bg, text_color=fg)
+
+    res_tile: StatTile = ui["res_tile"]
+    res_tile.set_content(f"{width} × {height} px")
+
     rmse_text = (
         f"{float(rmse):.4f} px"
         if isinstance(rmse, (int, float, np.number)) and np.isfinite(rmse)
         else "未記録（外部データ）"
     )
-    StatTile(
-        summary_card.body, "再投影誤差 (RMSE)", rmse_text,
-        tone="success" if quality == "good" else ("warning" if quality == "poor" else None),
-    ).grid(row=0, column=1, sticky="ew", padx=8)
-    StatTile(
-        summary_card.body, "焦点距離 / 主点",
+    rmse_tone = "success" if quality == "good" else ("warning" if quality == "poor" else None)
+    rmse_tile: StatTile = ui["rmse_tile"]
+    rmse_tile.set_content(rmse_text, tone=rmse_tone)
+
+    focal_tile: StatTile = ui["focal_tile"]
+    focal_tile.set_content(
         f"fx={camera_matrix[0, 0]:.1f}, fy={camera_matrix[1, 1]:.1f}",
         note=f"cx={camera_matrix[0, 2]:.1f}, cy={camera_matrix[1, 2]:.1f}",
-    ).grid(row=0, column=2, sticky="ew", padx=(8, 0))
-
-    detail = Collapsible(
-        summary_card.body,
-        "カメラ行列 K・歪み係数・読込元の詳細を表示",
-        f"読込元: {Path(source).name}",
-        opened=False,
     )
-    detail.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+
+    detail: Collapsible = ui["detail"]
+    if detail.subtitle_label is not None:
+        detail.subtitle_label.configure(text=f"読込元: {Path(source).name}")
+
     detail_text = (
         f"読込元: {source}\n"
         f"K: fx={camera_matrix[0, 0]:.4f}, fy={camera_matrix[1, 1]:.4f}, "
         f"cx={camera_matrix[0, 2]:.4f}, cy={camera_matrix[1, 2]:.4f}\n"
         "歪み係数 k1, k2, p1, p2, k3: " + ", ".join(f"{value:.7g}" for value in distortion)
     )
-    label(detail.body, detail_text, "mono", color=t.TEXT_SECONDARY).pack(anchor="w", fill="x")
+    ui["detail_label"].configure(text=detail_text)
 
-    # ---- Quick-skip for existing homography -----------------------------
-    skip_card = Card(
-        scroll,
-        title="既存のホモグラフィ行列をお持ちですか？",
-        description="すでに作成した homography_matrix.npy / .npz があれば、四隅の選択を省略して内容を確認できます。",
-        badge=("選択をスキップ可能", "info"),
+
+def build_homography_page(app: IntegratedApp, *, prewarm: bool = False) -> None:
+    if not prewarm:
+        assert app.calibration_data is not None
+    scroll, created = app.use_page(
+        "homography",
+        step_index=2,
+        step_badge="ステップ 3 / 4  ・  必須",
+        title="ホモグラフィの設定",
+        subtitle="歪みを補正する基準画像と、計測する平面の実際の幅・高さを指定します。すでにホモグラフィ行列（.npy / .npz）をお持ちの場合は、そのまま読み込んで完了画面へ進めます。",
+        background_build=prewarm,
     )
-    skip_card.grid(row=1, column=0, sticky="ew", pady=(0, t.GAP))
-    skip_card.body.columnconfigure(0, weight=1)
-    skip_row = ctk.CTkFrame(skip_card.body, fg_color="transparent")
-    skip_row.grid(row=0, column=0, sticky="ew")
-    skip_row.columnconfigure(0, weight=1)
 
-    PathField(
-        skip_row,
-        "既存のホモグラフィ行列 (.npy / .npz)",
-        app.homography_import_var,
-        mode="open",
-        dialog_title="既存のホモグラフィ行列を選択",
-        filetypes=(
-            ("NumPyファイル", "*.npy *.npz"),
-            ("すべてのファイル", "*.*"),
-        ),
-        extensions=HOMOGRAPHY_FILE_EXTENSIONS,
-        memory=app.dir_memory,
-        memory_key="homography_import",
-        dnd_enabled=True,
-        placeholder="ここに homography_matrix.npy / .npz をドロップすると自動で読み込みます",
-        on_error=lambda msg: app.toast.show(msg, title="ドロップできません", tone="warning"),
-        on_change=lambda path: import_homography_path(app, Path(path)),
-    ).grid(row=0, column=0, sticky="ew", padx=(0, 12))
+    if created:
+        # ---- Card 0: Loaded calibration summary -----------------------------
+        summary_card = Card(
+            scroll,
+            title="適用中のキャリブレーション情報",
+            badge=("既存データ", "info"),
+        )
+        summary_card.grid(row=0, column=0, sticky="ew", pady=(0, t.GAP))
+        for col in range(3):
+            summary_card.body.columnconfigure(col, weight=1, uniform="cal_stat")
 
-    button(
-        skip_row,
-        "行列を選んで完了へ  →",
-        app._import_homography_data,
-        variant="soft",
-        size="md",
-    ).grid(row=0, column=1, sticky="s", pady=(22, 0))
+        res_tile = StatTile(summary_card.body, "キャリブレーション解像度", "- × - px")
+        res_tile.grid(row=0, column=0, sticky="ew", padx=(0, 8))
 
-    # ---- Card 1: Reference image & plane dimensions ---------------------
-    config_card = Card(
-        scroll,
-        title="基準画像と平面の実寸",
-        description="基準画像を歪み補正したあと、次の画面で平面の四隅（左下 → 右下 → 右上 → 左上）をクリックします。",
-        number=1,
-    )
-    config_card.grid(row=2, column=0, sticky="ew", pady=(0, t.GAP))
-    config_card.body.columnconfigure(0, weight=1)
+        rmse_tile = StatTile(summary_card.body, "再投影誤差 (RMSE)", "-")
+        rmse_tile.grid(row=0, column=1, sticky="ew", padx=8)
 
-    PathField(
-        config_card.body,
-        "基準画像",
-        app.homography_vars["image"],
-        mode="open",
-        dialog_title="ホモグラフィの基準画像を選択",
-        filetypes=(
-            ("画像", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
-            ("すべてのファイル", "*.*"),
-        ),
-        extensions=IMAGE_EXTENSIONS,
-        memory=app.dir_memory,
-        memory_key="reference_image",
-        dnd_enabled=True,
-        required=True,
-        hint="対応形式: PNG / JPG / BMP / TIFF（ドラッグ＆ドロップ対応）",
-        on_error=lambda msg: app.toast.show(msg, title="ドロップできません", tone="warning"),
-    ).grid(row=0, column=0, sticky="ew", pady=(0, 16))
+        focal_tile = StatTile(summary_card.body, "焦点距離 / 主点", "fx=-, fy=-", note="cx=-, cy=-")
+        focal_tile.grid(row=0, column=2, sticky="ew", padx=(8, 0))
 
-    dim_frame = ctk.CTkFrame(config_card.body, fg_color="transparent")
-    dim_frame.grid(row=1, column=0, sticky="ew", pady=(0, 14))
-    dim_frame.columnconfigure(0, weight=1, uniform="dim")
-    dim_frame.columnconfigure(1, weight=1, uniform="dim")
+        detail = Collapsible(
+            summary_card.body,
+            "カメラ行列 K・歪み係数・読込元の詳細を表示",
+            "読込元: -",
+            opened=False,
+        )
+        detail.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+        detail_label = label(detail.body, "", "mono", color=t.TEXT_SECONDARY)
+        detail_label.pack(anchor="w", fill="x")
 
-    FormField(
-        dim_frame, "平面の幅（横方向）", app.homography_vars["width"],
-        unit="m", hint="左下 → 右下 の実寸距離（正の数値、例: 2.5）",
-    ).grid(row=0, column=0, sticky="ew", padx=(0, 12))
-    FormField(
-        dim_frame, "平面の高さ（縦方向）", app.homography_vars["height"],
-        unit="m", hint="左下 → 左上 の実寸距離（正の数値、例: 1.8）",
-    ).grid(row=0, column=1, sticky="ew", padx=(12, 0))
+        app._homography_ui = {  # type: ignore[attr-defined]
+            "card": summary_card,
+            "res_tile": res_tile,
+            "rmse_tile": rmse_tile,
+            "focal_tile": focal_tile,
+            "detail": detail,
+            "detail_label": detail_label,
+        }
 
-    Callout(
-        config_card.body,
-        "座標原点は「左下 (0, 0)」です。次の画面では 左下 → 右下 → 右上 → 左上（反時計回り）の順に4点を選択します。打った点はあとからドラッグで微調整できます。",
-        title="座標系とクリック順",
-        tone="info",
-    ).grid(row=2, column=0, sticky="ew")
+        # ---- Quick-skip for existing homography -----------------------------
+        skip_card = Card(
+            scroll,
+            title="既存のホモグラフィ行列をお持ちですか？",
+            description="すでに作成した homography_matrix.npy / .npz があれば、四隅の選択を省略して内容を確認できます。",
+            badge=("選択をスキップ可能", "info"),
+        )
+        skip_card.grid(row=1, column=0, sticky="ew", pady=(0, t.GAP))
+        skip_card.body.columnconfigure(0, weight=1)
+        skip_row = ctk.CTkFrame(skip_card.body, fg_color="transparent")
+        skip_row.grid(row=0, column=0, sticky="ew")
+        skip_row.columnconfigure(0, weight=1)
 
-    # ---- Card 2: Output path --------------------------------------------
-    out_card = Card(
-        scroll,
-        title="ホモグラフィ行列の保存先",
-        description="3×3 行列と設定メタデータを1つにまとめた .npy と、人間が読める確認用の .txt を同じ場所に出力します。",
-        number=2,
-    )
-    out_card.grid(row=3, column=0, sticky="ew")
-    out_card.body.columnconfigure(0, weight=1)
+        PathField(
+            skip_row,
+            "既存のホモグラフィ行列 (.npy / .npz)",
+            app.homography_import_var,
+            mode="open",
+            dialog_title="既存のホモグラフィ行列を選択",
+            filetypes=(
+                ("NumPyファイル", "*.npy *.npz"),
+                ("すべてのファイル", "*.*"),
+            ),
+            extensions=HOMOGRAPHY_FILE_EXTENSIONS,
+            memory=app.dir_memory,
+            memory_key="homography_import",
+            dnd_enabled=True,
+            placeholder="ここに homography_matrix.npy / .npz をドロップすると自動で読み込みます",
+            on_error=lambda msg: app.toast.show(msg, title="ドロップできません", tone="warning"),
+            on_change=lambda path: import_homography_path(app, Path(path)),
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 12))
 
-    PathField(
-        out_card.body,
-        "保存先ファイル (.npy)",
-        app.homography_vars["output"],
-        mode="save",
-        dialog_title="ホモグラフィ行列の保存先",
-        filetypes=(("NumPy行列", "*.npy"),),
-        extensions=(".npy",),
-        default_extension=".npy",
-        memory=app.dir_memory,
-        memory_key="homography_output",
-        dnd_enabled=True,
-        hint="既定では「統合結果/homography_matrix.npy」（および .txt）に保存されます。",
-        on_error=lambda msg: app.toast.show(msg, title="ドロップできません", tone="warning"),
-    ).grid(row=0, column=0, sticky="ew")
+        button(
+            skip_row,
+            "行列を選んで完了へ  →",
+            app._import_homography_data,
+            variant="soft",
+            size="md",
+        ).grid(row=0, column=1, sticky="s", pady=(22, 0))
+
+        # ---- Card 1: Reference image & plane dimensions ---------------------
+        config_card = Card(
+            scroll,
+            title="基準画像と平面の実寸",
+            description="基準画像を歪み補正したあと、次の画面で平面の四隅（左下 → 右下 → 右上 → 左上）をクリックします。",
+            number=1,
+        )
+        config_card.grid(row=2, column=0, sticky="ew", pady=(0, t.GAP))
+        config_card.body.columnconfigure(0, weight=1)
+
+        PathField(
+            config_card.body,
+            "基準画像",
+            app.homography_vars["image"],
+            mode="open",
+            dialog_title="ホモグラフィの基準画像を選択",
+            filetypes=(
+                ("画像", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
+                ("すべてのファイル", "*.*"),
+            ),
+            extensions=IMAGE_EXTENSIONS,
+            memory=app.dir_memory,
+            memory_key="reference_image",
+            dnd_enabled=True,
+            required=True,
+            hint="対応形式: PNG / JPG / BMP / TIFF（ドラッグ＆ドロップ対応）",
+            on_error=lambda msg: app.toast.show(msg, title="ドロップできません", tone="warning"),
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 16))
+
+        dim_frame = ctk.CTkFrame(config_card.body, fg_color="transparent")
+        dim_frame.grid(row=1, column=0, sticky="ew", pady=(0, 14))
+        dim_frame.columnconfigure(0, weight=1, uniform="dim")
+        dim_frame.columnconfigure(1, weight=1, uniform="dim")
+
+        FormField(
+            dim_frame, "平面の幅（横方向）", app.homography_vars["width"],
+            unit="m", hint="左下 → 右下 の実寸距離（正の数値、例: 2.5）",
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 12))
+        FormField(
+            dim_frame, "平面の高さ（縦方向）", app.homography_vars["height"],
+            unit="m", hint="左下 → 左上 の実寸距離（正の数値、例: 1.8）",
+        ).grid(row=0, column=1, sticky="ew", padx=(12, 0))
+
+        Callout(
+            config_card.body,
+            "座標原点は「左下 (0, 0)」です。次の画面では 左下 → 右下 → 右上 → 左上（反時計回り）の順に4点を選択します。打った点はあとからドラッグで微調整できます。",
+            title="座標系とクリック順",
+            tone="info",
+        ).grid(row=2, column=0, sticky="ew")
+
+        # ---- Card 2: Output path --------------------------------------------
+        out_card = Card(
+            scroll,
+            title="ホモグラフィ行列の保存先",
+            description="3×3 行列と設定メタデータを1つにまとめた .npy と、人間が読める確認用の .txt を同じ場所に出力します。",
+            number=2,
+        )
+        out_card.grid(row=3, column=0, sticky="ew")
+        out_card.body.columnconfigure(0, weight=1)
+
+        PathField(
+            out_card.body,
+            "保存先ファイル (.npy)",
+            app.homography_vars["output"],
+            mode="save",
+            dialog_title="ホモグラフィ行列の保存先",
+            filetypes=(("NumPy行列", "*.npy"),),
+            extensions=(".npy",),
+            default_extension=".npy",
+            memory=app.dir_memory,
+            memory_key="homography_output",
+            dnd_enabled=True,
+            hint="既定では「統合結果/homography_matrix.npy」（および .txt）に保存されます。",
+            on_error=lambda msg: app.toast.show(msg, title="ドロップできません", tone="warning"),
+        ).grid(row=0, column=0, sticky="ew")
+
+    if prewarm:
+        return
+
+    _refresh_homography_summary(app)
 
     # ---- Action bar -----------------------------------------------------
     app.set_action_bar(

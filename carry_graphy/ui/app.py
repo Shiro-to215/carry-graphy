@@ -44,7 +44,16 @@ from .pages.homography_page import (
 )
 from .pages.point_page import build_point_page, prepare_point_selection, save_homography_action
 from .point_canvas import PointCanvas
-from .widgets import DirectoryMemory, StepSidebar, ToastManager, button, label, tag
+from .widgets import (
+    DirectoryMemory,
+    FastScrollableFrame,
+    StepSidebar,
+    ToastManager,
+    button,
+    label,
+    set_button_enabled,
+    tag,
+)
 
 STEPS: list[tuple[str, str]] = [
     ("ボード作成", "任意・PNG出力"),
@@ -122,6 +131,14 @@ class IntegratedApp:
         self.board_preview_photo: tk.PhotoImage | None = None
         self.board_generated_settings: tuple[int, int, float, float, str, int] | None = None
         self.point_canvas: PointCanvas | None = None
+        self._cached_point_canvas: PointCanvas | None = None
+        self._point_image_dirty = False
+        self._cached_pages: dict[str, tk.Misc] = {}
+        self._transient_page: tk.Misc | None = None
+        self._active_page: tk.Misc | None = None
+        self._save_after_id: str | None = None
+        self._prewarm_after_id: str | None = None
+        self._poll_after_id: str | None = None
         self.current_step = 0
         self.is_calibrating = False
         self.advanced_calibration_open = bool(saved.get("advanced_calibration_open", False))
@@ -236,16 +253,24 @@ class IntegratedApp:
         self.action_right.grid(row=0, column=2, sticky="e", padx=t.PAD_PAGE_X, pady=14)
         self.action_back_button: ctk.CTkButton | None = None
         self.action_primary_button: ctk.CTkButton | None = None
+        self._pool_back_btn = button(self.action_left, "", None, variant="secondary", size="md")
+        self._pool_sec_btns: list[ctk.CTkButton] = [
+            button(self.action_right, "", None, variant="secondary", size="md"),
+            button(self.action_right, "", None, variant="secondary", size="md"),
+        ]
+        self._pool_primary_btn = button(self.action_right, "", None, variant="primary", size="lg")
 
         self.toast = ToastManager(self.root)
 
         self._bind_shortcuts()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.main_area.bind("<Destroy>", self._cancel_app_timers, add="+")
 
         self._build_board_page()
         if self.settings_store.last_error:
             self.toast.show(self.settings_store.last_error, title="設定の読み込み", tone="warning")
-        self.root.after(100, self._poll_messages)
+        self._prewarm_after_id = self.root.after(120, self._prewarm_next_page)
+        self._poll_after_id = self.root.after(100, self._poll_messages)
 
     # ------------------------------------------------------------------
     # Shell helpers (used by page modules)
@@ -253,14 +278,85 @@ class IntegratedApp:
 
     def _clear_content(self) -> None:
         self.point_canvas = None
+        self._cached_point_canvas = None
+        self._cached_pages.clear()
+        self._transient_page = None
+        self._active_page = None
         for child in self.content.winfo_children():
             child.destroy()
-        for row in range(6):
-            self.content.rowconfigure(row, weight=0)
-        for col in range(4):
-            self.content.columnconfigure(col, weight=0)
         self.content.rowconfigure(0, weight=1)
         self.content.columnconfigure(0, weight=1)
+
+    def _create_page_container(self, *, scrollable: bool) -> tk.Misc:
+        if scrollable:
+            scroll = FastScrollableFrame(self.content, bg=t.BG)
+            scroll.grid(row=0, column=0, sticky="nsew")
+            scroll.columnconfigure(0, weight=1)
+            return scroll
+        frame = ctk.CTkFrame(self.content, fg_color="transparent")
+        frame.grid(row=0, column=0, sticky="nsew")
+        return frame
+
+    def use_page(
+        self,
+        cache_key: str | None,
+        *,
+        step_index: int,
+        step_badge: str,
+        title: str,
+        subtitle: str,
+        scrollable: bool = True,
+        background_build: bool = False,
+    ) -> tuple[tk.Misc, bool]:
+        """Return ``(page_container, created)`` using cached pages when available."""
+        if background_build:
+            assert cache_key is not None
+            if cache_key in self._cached_pages:
+                return self._cached_pages[cache_key], False
+            container = self._create_page_container(scrollable=scrollable)
+            container.grid_remove()  # type: ignore[attr-defined]
+            self._cached_pages[cache_key] = container
+            return container, True
+
+        self._schedule_save_settings()
+        if self._transient_page is not None:
+            if self._active_page is self._transient_page:
+                self._active_page = None
+            self._transient_page.destroy()
+            self._transient_page = None
+
+        target_existing = self._cached_pages.get(cache_key) if cache_key is not None else None
+        if (
+            self._active_page is not None
+            and self._active_page is not target_existing
+            and self._active_page.winfo_exists()
+        ):
+            self._active_page.grid_remove()  # type: ignore[attr-defined]
+
+        if cache_key != "point":
+            self.point_canvas = None
+
+        self.current_step = step_index
+        self.step_label.set(f"{step_badge}　{title}")
+        self.header_badge.configure(text=f" {step_badge} ")
+        self.header_title.configure(text=title)
+        self.header_subtitle.configure(text=subtitle)
+        self.refresh_sidebar()
+
+        if cache_key is not None:
+            if target_existing is not None:
+                target_existing.grid(row=0, column=0, sticky="nsew")  # type: ignore[call-arg]
+                self._active_page = target_existing
+                return target_existing, False
+            container = self._create_page_container(scrollable=scrollable)
+            self._cached_pages[cache_key] = container
+            self._active_page = container
+            return container, True
+
+        container = self._create_page_container(scrollable=scrollable)
+        self._transient_page = container
+        self._active_page = container
+        return container, True
 
     def begin_page(
         self,
@@ -270,30 +366,27 @@ class IntegratedApp:
         title: str,
         subtitle: str,
         scrollable: bool = True,
-    ) -> ctk.CTkBaseClass:
-        self.save_settings()
-        self._clear_content()
-        self.current_step = step_index
-        self.step_label.set(f"{step_badge}　{title}")
-        self.header_badge.configure(text=f" {step_badge} ")
-        self.header_title.configure(text=title)
-        self.header_subtitle.configure(text=subtitle)
-        self.refresh_sidebar()
+    ) -> tk.Misc:
+        container, _ = self.use_page(
+            None,
+            step_index=step_index,
+            step_badge=step_badge,
+            title=title,
+            subtitle=subtitle,
+            scrollable=scrollable,
+        )
+        return container
 
-        if scrollable:
-            scroll = ctk.CTkScrollableFrame(
-                self.content,
-                fg_color="transparent",
-                corner_radius=0,
-                scrollbar_button_color=t.BORDER_STRONG,
-                scrollbar_button_hover_color=t.TEXT_MUTED,
-            )
-            scroll.grid(row=0, column=0, sticky="nsew")
-            scroll.columnconfigure(0, weight=1)
-            return scroll
-        frame = ctk.CTkFrame(self.content, fg_color="transparent")
-        frame.grid(row=0, column=0, sticky="nsew")
-        return frame
+    def _prewarm_next_page(self) -> None:
+        self._prewarm_after_id = None
+        if not self.root.winfo_exists() or self.is_calibrating:
+            return
+        if "calibration" not in self._cached_pages:
+            build_calibration_page(self, prewarm=True)
+            self._prewarm_after_id = self.root.after(120, self._prewarm_next_page)
+            return
+        if "homography" not in self._cached_pages:
+            build_homography_page(self, prewarm=True)
 
     def set_action_bar(
         self,
@@ -302,24 +395,34 @@ class IntegratedApp:
         back: tuple[str, Callable[[], object]] | None = None,
         secondary: list[tuple[str, Callable[[], object]]] | None = None,
     ) -> ctk.CTkButton:
-        for child in self.action_left.winfo_children():
-            child.destroy()
-        for child in self.action_right.winfo_children():
-            child.destroy()
+        self._pool_back_btn.pack_forget()
+        for btn in self._pool_sec_btns:
+            btn.pack_forget()
+        self._pool_primary_btn.pack_forget()
+
         self.action_back_button = None
         if back is not None:
-            self.action_back_button = button(
-                self.action_left, back[0], back[1], variant="secondary", size="md",
+            self._pool_back_btn.configure(text=back[0], command=back[1])
+            set_button_enabled(self._pool_back_btn, True)
+            self._pool_back_btn.pack(side="left")
+            self.action_back_button = self._pool_back_btn
+
+        sec_list = secondary or []
+        while len(self._pool_sec_btns) < len(sec_list):
+            self._pool_sec_btns.append(
+                button(self.action_right, "", None, variant="secondary", size="md")
             )
-            self.action_back_button.pack(side="left")
-        for idx, (text, cmd) in enumerate(secondary or []):
-            sec_btn = button(self.action_right, text, cmd, variant="secondary", size="md")
+        for idx, (text, cmd) in enumerate(sec_list):
+            sec_btn = self._pool_sec_btns[idx]
+            sec_btn.configure(text=text, command=cmd)
+            set_button_enabled(sec_btn, True)
             sec_btn.pack(side="left", padx=(0, 10))
             setattr(self, f"action_secondary_{idx}", sec_btn)
-        self.action_primary_button = button(
-            self.action_right, primary[0], primary[1], variant="primary", size="lg",
-        )
-        self.action_primary_button.pack(side="left")
+
+        self._pool_primary_btn.configure(text=primary[0], command=primary[1])
+        set_button_enabled(self._pool_primary_btn, True)
+        self._pool_primary_btn.pack(side="left")
+        self.action_primary_button = self._pool_primary_btn
         return self.action_primary_button
 
     def refresh_sidebar(self) -> None:
@@ -360,7 +463,17 @@ class IntegratedApp:
     # Settings persistence & shortcuts
     # ------------------------------------------------------------------
 
+    def _schedule_save_settings(self) -> None:
+        if self._save_after_id is None and self.root.winfo_exists():
+            self._save_after_id = self.root.after(300, self.save_settings)
+
     def save_settings(self) -> None:
+        if self._save_after_id is not None:
+            try:
+                self.root.after_cancel(self._save_after_id)
+            except tk.TclError:
+                pass
+            self._save_after_id = None
         try:
             geom = self.root.geometry()
         except tk.TclError:
@@ -378,7 +491,18 @@ class IntegratedApp:
             "directories": dict(self.dir_memory.dirs),
         })
 
+    def _cancel_app_timers(self, _event: tk.Event | None = None) -> None:
+        for attr in ("_prewarm_after_id", "_save_after_id", "_poll_after_id"):
+            after_id = getattr(self, attr, None)
+            if after_id is not None:
+                try:
+                    self.root.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+                setattr(self, attr, None)
+
     def _on_close(self) -> None:
+        self._cancel_app_timers()
         self.save_settings()
         self.root.destroy()
 
@@ -387,6 +511,26 @@ class IntegratedApp:
         self.root.bind("<BackSpace>", self._on_backspace)
         self.root.bind("<KeyPress-space>", self._on_space_press)
         self.root.bind("<KeyRelease-space>", self._on_space_release)
+        self.root.bind_all("<MouseWheel>", self._on_global_mousewheel, add="+")
+
+    def _on_global_mousewheel(self, event: tk.Event) -> None:
+        if not isinstance(self._active_page, FastScrollableFrame):
+            return
+        widget = event.widget
+        if isinstance(widget, tk.Misc):
+            w: tk.Misc | None = widget
+            while w is not None:
+                if self.point_canvas is not None and w is self.point_canvas.canvas:
+                    return
+                if isinstance(w, (ctk.CTkTextbox, tk.Text)):
+                    return
+                w = w.master
+        if not event.delta:
+            return
+        delta_px = -int(round(event.delta / 120.0 * 80.0))
+        if delta_px == 0:
+            delta_px = -12 if event.delta > 0 else 12
+        self._active_page.scroll_by_pixels(delta_px)
 
     def _on_backspace(self, event: tk.Event) -> None:
         if self.current_step != 3:
@@ -653,7 +797,7 @@ class IntegratedApp:
         except queue.Empty:
             pass
         if self.root.winfo_exists():
-            self.root.after(100, self._poll_messages)
+            self._poll_after_id = self.root.after(100, self._poll_messages)
 
 
 def main() -> None:

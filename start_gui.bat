@@ -7,6 +7,7 @@ cd /d "%~dp0"
 set "VENV_DIR=.venv"
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 set "VENV_PYW=%VENV_DIR%\Scripts\pythonw.exe"
+set "STAMP_FILE=%VENV_DIR%\.requirements.stamp"
 
 rem --- 1. Create the virtual environment on first run ---
 if not exist "%VENV_PY%" (
@@ -22,16 +23,21 @@ if not exist "%VENV_PY%" (
     "%VENV_PY%" -m pip install --upgrade pip
     "%VENV_PY%" -m pip install -r requirements.txt
     if errorlevel 1 goto :fail
+    copy /y "requirements.txt" "%STAMP_FILE%" >nul 2>nul
 )
 
-rem --- 2. Verify dependencies (install if missing) ---
-"%VENV_PY%" -c "import tkinter, cv2, numpy, customtkinter, tkinterdnd2" >nul 2>nul
+rem --- 2. Verify dependencies only when requirements changed or stamp is missing ---
+fc /b "requirements.txt" "%STAMP_FILE%" >nul 2>nul
 if errorlevel 1 (
-    echo [setup] Missing packages detected. Installing requirements ...
-    "%VENV_PY%" -m pip install -r requirements.txt
-    if errorlevel 1 goto :fail
-    "%VENV_PY%" -c "import tkinter, cv2, numpy, customtkinter, tkinterdnd2"
-    if errorlevel 1 goto :fail
+    "%VENV_PY%" -c "import tkinter, cv2, numpy, customtkinter, tkinterdnd2" >nul 2>nul
+    if errorlevel 1 (
+        echo [setup] Missing packages detected. Installing requirements ...
+        "%VENV_PY%" -m pip install -r requirements.txt
+        if errorlevel 1 goto :fail
+        "%VENV_PY%" -c "import tkinter, cv2, numpy, customtkinter, tkinterdnd2"
+        if errorlevel 1 goto :fail
+    )
+    copy /y "requirements.txt" "%STAMP_FILE%" >nul 2>nul
 )
 
 rem --- 3. Launch the GUI without a console window ---

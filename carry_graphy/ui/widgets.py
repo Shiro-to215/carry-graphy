@@ -38,7 +38,7 @@ def set_tree_cursor(widget: tk.Misc, cursor: str) -> None:
 # --------------------------------------------------------------------------
 
 class WrapLabel(ctk.CTkLabel):
-    """A left-aligned label whose wrap length follows its allocated width."""
+    """A left-aligned label whose wrap length follows its allocated width without recursive layout loops."""
 
     def __init__(self, master: tk.Misc, text: str = "", *, font: ctk.CTkFont | None = None,
                  text_color: str = t.TEXT_SECONDARY, wrap: bool = True, **kwargs) -> None:
@@ -47,17 +47,41 @@ class WrapLabel(ctk.CTkLabel):
         kwargs.setdefault("height", 0)
         super().__init__(
             master, text=text, font=font or t.fonts().body, text_color=text_color,
-            fg_color="transparent", wraplength=560 if wrap else 0, **kwargs,
+            fg_color="transparent", wraplength=720 if wrap else 0, **kwargs,
         )
         self._wrap = wrap
-        self._last_wrap = 0
+        self._last_wrap = 720 if wrap else 0
+        self._pending_wrap: int | None = None
+        self._wrap_after_id: str | None = None
         if wrap:
             tk.Misc.bind(self, "<Configure>", self._on_configure, add="+")
+            tk.Misc.bind(self, "<Destroy>", self._on_destroy, add="+")
+
+    def _on_destroy(self, _event: tk.Event) -> None:
+        if self._wrap_after_id is not None:
+            try:
+                self.after_cancel(self._wrap_after_id)
+            except tk.TclError:
+                pass
+            self._wrap_after_id = None
 
     def _on_configure(self, event: tk.Event) -> None:
+        if event.width <= 1:
+            return
         scaling = self._get_widget_scaling()
         width = max(80, int(event.width / scaling) - 4)
-        if abs(width - self._last_wrap) > 3:
+        if abs(width - self._last_wrap) > 12:
+            self._pending_wrap = width
+            if self._wrap_after_id is None:
+                self._wrap_after_id = self.after_idle(self._apply_pending_wrap)
+
+    def _apply_pending_wrap(self) -> None:
+        self._wrap_after_id = None
+        if not self.winfo_exists() or self._pending_wrap is None:
+            return
+        width = self._pending_wrap
+        self._pending_wrap = None
+        if abs(width - self._last_wrap) > 4:
             self._last_wrap = width
             self.configure(wraplength=width)
 
@@ -127,6 +151,144 @@ def set_button_enabled(widget: ctk.CTkButton, enabled: bool) -> None:
 # Containers
 # --------------------------------------------------------------------------
 
+class _QuietScrollbar(ctk.CTkScrollbar):
+    """CTkScrollbar without synchronous update_idletasks() cascades or redundant redraws."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        self._is_full_range: bool | None = None
+        super().__init__(*args, **kwargs)
+        self._canvas.update_idletasks = lambda: None  # type: ignore[method-assign]
+
+    def _draw(self, no_color_updates: bool = False) -> None:
+        super()._draw(no_color_updates)
+        if self._is_full_range:
+            bg = self._apply_appearance_mode(self._bg_color)
+            self._canvas.itemconfig("scrollbar_parts", fill=bg, outline=bg)
+
+    def _clicked(self, event) -> None:
+        if self._is_full_range:
+            return
+        super()._clicked(event)
+
+    def set(self, start_value: float, end_value: float) -> None:
+        s, e = float(start_value), float(end_value)
+        full = s <= 0.0005 and e >= 0.9995
+        if (
+            self._is_full_range is not None
+            and full == self._is_full_range
+            and abs(s - self._start_value) < 5e-4
+            and abs(e - self._end_value) < 5e-4
+        ):
+            return
+        self._is_full_range = full
+        self._start_value = s
+        self._end_value = e
+        self._draw()
+
+
+class FastScrollableFrame(tk.Frame):
+    """Lightweight scrollable container with smooth pixel scrolling and no global event leaks."""
+
+    def __init__(self, master: tk.Misc, *, bg: str = t.BG) -> None:
+        self._outer = tk.Frame(master, bg=bg, highlightthickness=0, bd=0)
+        self._outer.rowconfigure(0, weight=1)
+        self._outer.columnconfigure(0, weight=1)
+
+        self._canvas = tk.Canvas(
+            self._outer, bg=bg, highlightthickness=0, bd=0, yscrollincrement=1,
+        )
+        self._canvas.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+
+        self._scrollbar = _QuietScrollbar(
+            self._outer,
+            orientation="vertical",
+            command=self._canvas.yview,
+            fg_color=bg,
+            bg_color=bg,
+            button_color=t.BORDER_STRONG,
+            button_hover_color=t.TEXT_MUTED,
+            width=14,
+        )
+        self._scrollbar.grid(row=0, column=1, sticky="ns")
+        self._canvas.configure(yscrollcommand=self._scrollbar.set)
+
+        super().__init__(self._canvas, bg=bg, highlightthickness=0, bd=0)
+        self._window_id = self._canvas.create_window((0, 0), window=self, anchor="nw")
+        self._last_canvas_width = 0
+        self._sync_after_id: str | None = None
+
+        tk.Misc.bind(self, "<Configure>", self._on_inner_configure, add="+")
+        self._canvas.bind("<Configure>", self._on_canvas_configure, add="+")
+
+    def _on_canvas_configure(self, event: tk.Event) -> None:
+        if event.width > 1 and event.width != self._last_canvas_width:
+            self._last_canvas_width = event.width
+            self._canvas.itemconfigure(self._window_id, width=event.width)
+        self._schedule_sync()
+
+    def _on_inner_configure(self, _event: tk.Event) -> None:
+        self._schedule_sync()
+
+    def _schedule_sync(self) -> None:
+        if self._sync_after_id is None and self.winfo_exists():
+            self._sync_after_id = self.after_idle(self._sync_scrollregion)
+
+    def _sync_scrollregion(self) -> None:
+        self._sync_after_id = None
+        if not self.winfo_exists() or not self._canvas.winfo_exists():
+            return
+        canvas_w = max(1, self._canvas.winfo_width())
+        canvas_h = max(1, self._canvas.winfo_height())
+        req_w = max(self.winfo_reqwidth(), canvas_w)
+        req_h = max(self.winfo_reqheight(), canvas_h)
+        self._canvas.configure(scrollregion=(0, 0, req_w, req_h))
+
+    def can_scroll(self) -> bool:
+        if not self._canvas.winfo_exists():
+            return False
+        first, last = self._canvas.yview()
+        if first <= 0.0005 and last >= 0.9995:
+            return False
+        return self.winfo_reqheight() > self._canvas.winfo_height() + 2
+
+    def scroll_by_pixels(self, delta_px: int) -> None:
+        if delta_px == 0 or not self.can_scroll():
+            return
+        self._canvas.yview_scroll(delta_px, "units")
+
+    def scroll_to_top(self) -> None:
+        if self._canvas.winfo_exists():
+            self._canvas.yview_moveto(0.0)
+
+    def grid(self, **kwargs) -> None:  # type: ignore[override]
+        self._outer.grid(**kwargs)
+        self._schedule_sync()
+
+    def grid_remove(self) -> None:
+        self._outer.grid_remove()
+
+    def grid_forget(self) -> None:
+        self._outer.grid_forget()
+
+    def pack(self, **kwargs) -> None:  # type: ignore[override]
+        self._outer.pack(**kwargs)
+        self._schedule_sync()
+
+    def pack_forget(self) -> None:
+        self._outer.pack_forget()
+
+    def destroy(self) -> None:
+        if self._sync_after_id is not None:
+            try:
+                self.after_cancel(self._sync_after_id)
+            except tk.TclError:
+                pass
+            self._sync_after_id = None
+        super().destroy()
+        if self._outer.winfo_exists():
+            self._outer.destroy()
+
+
 class Card(ctk.CTkFrame):
     """White rounded surface with an optional numbered header."""
 
@@ -138,6 +300,7 @@ class Card(ctk.CTkFrame):
             border_width=1, border_color=t.BORDER, **kwargs,
         )
         self.columnconfigure(0, weight=1)
+        self.badge_label: ctk.CTkLabel | None = None
         row = 0
         if title:
             header = ctk.CTkFrame(self, fg_color="transparent")
@@ -154,7 +317,8 @@ class Card(ctk.CTkFrame):
                 header, text=title, font=t.fonts().title, text_color=t.TEXT, anchor="w",
             ).grid(row=0, column=column, sticky="w")
             if badge:
-                tag(header, badge[0], badge[1]).grid(row=0, column=column + 1, sticky="w", padx=(10, 0))
+                self.badge_label = tag(header, badge[0], badge[1])
+                self.badge_label.grid(row=0, column=column + 1, sticky="w", padx=(10, 0))
             row += 1
             if description:
                 label(self, description, "body", color=t.TEXT_MUTED).grid(
@@ -209,9 +373,12 @@ class Collapsible(ctk.CTkFrame):
         self.chevron.grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 8))
         ctk.CTkLabel(self.header, text=title, font=t.fonts().subtitle, text_color=t.TEXT,
                      anchor="w").grid(row=0, column=1, sticky="w")
+        self.subtitle_label: ctk.CTkLabel | None = None
         if subtitle:
-            ctk.CTkLabel(self.header, text=subtitle, font=t.fonts().caption, text_color=t.TEXT_MUTED,
-                         anchor="w").grid(row=1, column=1, sticky="w")
+            self.subtitle_label = ctk.CTkLabel(
+                self.header, text=subtitle, font=t.fonts().caption, text_color=t.TEXT_MUTED, anchor="w",
+            )
+            self.subtitle_label.grid(row=1, column=1, sticky="w")
         bind_tree(self.header, "<Button-1>", lambda _e: self.toggle())
         set_tree_cursor(self.header, "hand2")
         self.body = ctk.CTkFrame(self, fg_color="transparent")
@@ -300,12 +467,22 @@ class StatTile(ctk.CTkFrame):
         bg, border, fg = t.TONES[tone] if tone else (t.SURFACE_ALT, t.BORDER, t.TEXT)
         super().__init__(master, fg_color=bg, corner_radius=t.RADIUS_CONTROL, border_width=1, border_color=border)
         self.columnconfigure(0, weight=1)
-        label(self, caption, "caption_bold", color=t.TEXT_MUTED if not tone else fg).grid(
-            row=0, column=0, sticky="ew", padx=16, pady=(12, 0))
+        self.caption_label = label(self, caption, "caption_bold", color=t.TEXT_MUTED if not tone else fg)
+        self.caption_label.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 0))
         self.value_label = label(self, value, "subtitle", color=t.TEXT if not tone else fg)
         self.value_label.grid(row=1, column=0, sticky="ew", padx=16, pady=(2, 12 if not note else 0))
-        if note:
-            label(self, note, "caption", color=t.TEXT_MUTED).grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 12))
+        self.note_label: WrapLabel | None = None
+        if note is not None:
+            self.note_label = label(self, note, "caption", color=t.TEXT_MUTED)
+            self.note_label.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 12))
+
+    def set_content(self, value: str, *, tone: str | None = None, note: str | None = None) -> None:
+        bg, border, fg = t.TONES[tone] if tone else (t.SURFACE_ALT, t.BORDER, t.TEXT)
+        self.configure(fg_color=bg, border_color=border)
+        self.caption_label.configure(text_color=t.TEXT_MUTED if not tone else fg)
+        self.value_label.configure(text=value, text_color=t.TEXT if not tone else fg)
+        if note is not None and self.note_label is not None:
+            self.note_label.configure(text=note)
 
 
 # --------------------------------------------------------------------------

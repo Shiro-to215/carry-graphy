@@ -42,210 +42,216 @@ if TYPE_CHECKING:
     from ..app import IntegratedApp
 
 
-def build_calibration_page(app: IntegratedApp) -> None:
-    scroll = app.begin_page(
+def build_calibration_page(app: IntegratedApp, *, prewarm: bool = False) -> None:
+    scroll, created = app.use_page(
+        "calibration",
         step_index=1,
         step_badge="ステップ 2 / 4  ・  必須",
         title="カメラキャリブレーション",
         subtitle="ChArUcoボードを撮影した動画を解析してカメラ行列と歪み係数を計算します。過去のキャリブレーション結果（.npz / .npy）がある場合は、そのまま読み込んで次へ進めます。",
+        background_build=prewarm,
     )
 
-    # ---- Quick-skip banner for existing calibration data ----------------
-    skip_card = Card(
-        scroll,
-        title="既存のキャリブレーションデータをお持ちですか？",
-        description="すでに計算済みの .npz または .npy があれば、動画の解析をスキップしてホモグラフィ設定へ進めます。下の枠にドラッグ＆ドロップすることもできます。",
-        badge=("解析をスキップ可能", "info"),
-    )
-    skip_card.grid(row=0, column=0, sticky="ew", pady=(0, t.GAP))
-    skip_card.body.columnconfigure(0, weight=1)
+    if created:
+        # ---- Quick-skip banner for existing calibration data ----------------
+        skip_card = Card(
+            scroll,
+            title="既存のキャリブレーションデータをお持ちですか？",
+            description="すでに計算済みの .npz または .npy があれば、動画の解析をスキップしてホモグラフィ設定へ進めます。下の枠にドラッグ＆ドロップすることもできます。",
+            badge=("解析をスキップ可能", "info"),
+        )
+        skip_card.grid(row=0, column=0, sticky="ew", pady=(0, t.GAP))
+        skip_card.body.columnconfigure(0, weight=1)
 
-    skip_row = ctk.CTkFrame(skip_card.body, fg_color="transparent")
-    skip_row.grid(row=0, column=0, sticky="ew")
-    skip_row.columnconfigure(0, weight=1)
+        skip_row = ctk.CTkFrame(skip_card.body, fg_color="transparent")
+        skip_row.grid(row=0, column=0, sticky="ew")
+        skip_row.columnconfigure(0, weight=1)
 
-    app.calibration_import_field = PathField(
-        skip_row,
-        "既存のカメラ行列ファイル (.npz / .npy)",
-        app.calibration_import_var,
-        mode="open",
-        dialog_title="カメラ行列を含むNPYまたはNPZを選択",
-        filetypes=(
-            ("NumPyファイル", "*.npz *.npy"),
-            ("すべてのファイル", "*.*"),
-        ),
-        extensions=CALIBRATION_FILE_EXTENSIONS,
-        memory=app.dir_memory,
-        memory_key="calibration_import",
-        dnd_enabled=True,
-        placeholder="ここに calibration.npz / .npy をドロップすると自動で読み込みます",
-        on_error=lambda msg: app.toast.show(msg, title="ドロップできません", tone="warning"),
-        on_change=lambda path: import_calibration_path(app, Path(path)),
-    )
-    app.calibration_import_field.grid(row=0, column=0, sticky="ew", padx=(0, 12))
+        app.calibration_import_field = PathField(
+            skip_row,
+            "既存のカメラ行列ファイル (.npz / .npy)",
+            app.calibration_import_var,
+            mode="open",
+            dialog_title="カメラ行列を含むNPYまたはNPZを選択",
+            filetypes=(
+                ("NumPyファイル", "*.npz *.npy"),
+                ("すべてのファイル", "*.*"),
+            ),
+            extensions=CALIBRATION_FILE_EXTENSIONS,
+            memory=app.dir_memory,
+            memory_key="calibration_import",
+            dnd_enabled=True,
+            placeholder="ここに calibration.npz / .npy をドロップすると自動で読み込みます",
+            on_error=lambda msg: app.toast.show(msg, title="ドロップできません", tone="warning"),
+            on_change=lambda path: import_calibration_path(app, Path(path)),
+        )
+        app.calibration_import_field.grid(row=0, column=0, sticky="ew", padx=(0, 12))
 
-    app.load_calibration_button = button(
-        skip_row,
-        "ファイルを選んでホモグラフィへ  →",
-        app._import_calibration_data,
-        variant="soft",
-        size="md",
-    )
-    app.load_calibration_button.grid(row=0, column=1, sticky="s", pady=(22, 0))
+        app.load_calibration_button = button(
+            skip_row,
+            "ファイルを選んでホモグラフィへ  →",
+            app._import_calibration_data,
+            variant="soft",
+            size="md",
+        )
+        app.load_calibration_button.grid(row=0, column=1, sticky="s", pady=(22, 0))
 
-    # ---- Card 1: Video & output -----------------------------------------
-    io_card = Card(
-        scroll,
-        title="解析する動画と保存先",
-        description="動画ファイルを指定して［キャリブレーションを開始］を押すと、良質なフレームを自動選別してカメラ値を算出します。",
-        number=1,
-    )
-    io_card.grid(row=1, column=0, sticky="ew", pady=(0, t.GAP))
-    io_card.body.columnconfigure(0, weight=1)
+        # ---- Card 1: Video & output -----------------------------------------
+        io_card = Card(
+            scroll,
+            title="解析する動画と保存先",
+            description="動画ファイルを指定して［キャリブレーションを開始］を押すと、良質なフレームを自動選別してカメラ値を算出します。",
+            number=1,
+        )
+        io_card.grid(row=1, column=0, sticky="ew", pady=(0, t.GAP))
+        io_card.body.columnconfigure(0, weight=1)
 
-    PathField(
-        io_card.body,
-        "キャリブレーション動画",
-        app.calibration_vars["video"],
-        mode="open",
-        dialog_title="キャリブレーション動画を選択",
-        filetypes=(
-            ("動画", "*.mp4 *.avi *.mov *.mkv *.m4v"),
-            ("すべてのファイル", "*.*"),
-        ),
-        extensions=VIDEO_EXTENSIONS,
-        memory=app.dir_memory,
-        memory_key="video",
-        dnd_enabled=True,
-        required=True,
-        hint="対応形式: MP4 / AVI / MOV / MKV / M4V（ファイルを直接ドロップできます）",
-        on_error=lambda msg: app.toast.show(msg, title="ドロップできません", tone="warning"),
-    ).grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        PathField(
+            io_card.body,
+            "キャリブレーション動画",
+            app.calibration_vars["video"],
+            mode="open",
+            dialog_title="キャリブレーション動画を選択",
+            filetypes=(
+                ("動画", "*.mp4 *.avi *.mov *.mkv *.m4v"),
+                ("すべてのファイル", "*.*"),
+            ),
+            extensions=VIDEO_EXTENSIONS,
+            memory=app.dir_memory,
+            memory_key="video",
+            dnd_enabled=True,
+            required=True,
+            hint="対応形式: MP4 / AVI / MOV / MKV / M4V（ファイルを直接ドロップできます）",
+            on_error=lambda msg: app.toast.show(msg, title="ドロップできません", tone="warning"),
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 14))
 
-    PathField(
-        io_card.body,
-        "結果の保存先フォルダ",
-        app.calibration_vars["output"],
-        mode="dir",
-        dialog_title="キャリブレーション結果の保存先",
-        memory=app.dir_memory,
-        memory_key="calibration_output",
-        dnd_enabled=True,
-        hint="calibration.npz と calibration_summary.txt がこのフォルダに出力されます。",
-        on_error=lambda msg: app.toast.show(msg, title="ドロップできません", tone="warning"),
-    ).grid(row=1, column=0, sticky="ew")
+        PathField(
+            io_card.body,
+            "結果の保存先フォルダ",
+            app.calibration_vars["output"],
+            mode="dir",
+            dialog_title="キャリブレーション結果の保存先",
+            memory=app.dir_memory,
+            memory_key="calibration_output",
+            dnd_enabled=True,
+            hint="calibration.npz と calibration_summary.txt がこのフォルダに出力されます。",
+            on_error=lambda msg: app.toast.show(msg, title="ドロップできません", tone="warning"),
+        ).grid(row=1, column=0, sticky="ew")
 
-    # ---- Card 2: Board parameters ---------------------------------------
-    board_card = Card(
-        scroll,
-        title="ボード設定（撮影した実物に合わせてください）",
-        description="長さの単位は統一してください（例: すべて mm）。ステップ1で設定した値が引き継がれています。",
-        number=2,
-    )
-    board_card.grid(row=2, column=0, sticky="ew", pady=(0, t.GAP))
-    for col in range(2):
-        board_card.body.columnconfigure(col, weight=1, uniform="cal_board_cols")
+        # ---- Card 2: Board parameters ---------------------------------------
+        board_card = Card(
+            scroll,
+            title="ボード設定（撮影した実物に合わせてください）",
+            description="長さの単位は統一してください（例: すべて mm）。ステップ1で設定した値が引き継がれています。",
+            number=2,
+        )
+        board_card.grid(row=2, column=0, sticky="ew", pady=(0, t.GAP))
+        for col in range(2):
+            board_card.body.columnconfigure(col, weight=1, uniform="cal_board_cols")
 
-    FormField(
-        board_card.body, "横のマス数", app.calibration_vars["squares_x"], unit="マス",
-    ).grid(row=0, column=0, sticky="ew", padx=(0, 12), pady=(0, 14))
-    FormField(
-        board_card.body, "縦のマス数", app.calibration_vars["squares_y"], unit="マス",
-    ).grid(row=0, column=1, sticky="ew", padx=(12, 0), pady=(0, 14))
-    FormField(
-        board_card.body, "マスの一辺", app.calibration_vars["square_length"], unit="mm",
-    ).grid(row=1, column=0, sticky="ew", padx=(0, 12), pady=(0, 14))
-    FormField(
-        board_card.body, "マーカーの一辺", app.calibration_vars["marker_length"], unit="mm",
-    ).grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=(0, 14))
-    ChoiceField(
-        board_card.body, "ArUco辞書", app.calibration_vars["dictionary"], ARUCO_DICTIONARIES, width=260,
-    ).grid(row=2, column=0, columnspan=2, sticky="w")
+        FormField(
+            board_card.body, "横のマス数", app.calibration_vars["squares_x"], unit="マス",
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 12), pady=(0, 14))
+        FormField(
+            board_card.body, "縦のマス数", app.calibration_vars["squares_y"], unit="マス",
+        ).grid(row=0, column=1, sticky="ew", padx=(12, 0), pady=(0, 14))
+        FormField(
+            board_card.body, "マスの一辺", app.calibration_vars["square_length"], unit="mm",
+        ).grid(row=1, column=0, sticky="ew", padx=(0, 12), pady=(0, 14))
+        FormField(
+            board_card.body, "マーカーの一辺", app.calibration_vars["marker_length"], unit="mm",
+        ).grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=(0, 14))
+        ChoiceField(
+            board_card.body, "ArUco辞書", app.calibration_vars["dictionary"], ARUCO_DICTIONARIES, width=260,
+        ).grid(row=2, column=0, columnspan=2, sticky="w")
 
-    # ---- Collapsible: Advanced solver options ---------------------------
-    advanced = Collapsible(
-        scroll,
-        "詳細パラメータ（フレーム選別・しきい値）",
-        "通常は既定値のままで構いません。フレーム数が足りない場合やブレが多い動画のときだけ調整してください。",
-        opened=app.advanced_calibration_open,
-        on_toggle=lambda opened: setattr(app, "advanced_calibration_open", opened),
-    )
-    advanced.grid(row=3, column=0, sticky="ew", pady=(0, t.GAP))
-    for col in range(3):
-        advanced.body.columnconfigure(col, weight=1, uniform="adv_cols")
+        # ---- Collapsible: Advanced solver options ---------------------------
+        advanced = Collapsible(
+            scroll,
+            "詳細パラメータ（フレーム選別・しきい値）",
+            "通常は既定値のままで構いません。フレーム数が足りない場合やブレが多い動画のときだけ調整してください。",
+            opened=app.advanced_calibration_open,
+            on_toggle=lambda opened: setattr(app, "advanced_calibration_open", opened),
+        )
+        advanced.grid(row=3, column=0, sticky="ew", pady=(0, t.GAP))
+        for col in range(3):
+            advanced.body.columnconfigure(col, weight=1, uniform="adv_cols")
 
-    FormField(
-        advanced.body, "使用フレーム数", app.calibration_vars["top_n"],
-        unit="枚", hint="スコア上位から選ぶ枚数（3以上）",
-    ).grid(row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 14))
-    FormField(
-        advanced.body, "解析間隔", app.calibration_vars["stride"],
-        unit="フレームごと", hint="1で全フレーム、5で5枚おき",
-    ).grid(row=0, column=1, sticky="ew", padx=10, pady=(0, 14))
-    FormField(
-        advanced.body, "ブレ判定しきい値", app.calibration_vars["blur_threshold"],
-        hint="小さいほどブレた画像も許容（0以上）",
-    ).grid(row=0, column=2, sticky="ew", padx=(10, 0), pady=(0, 14))
+        FormField(
+            advanced.body, "使用フレーム数", app.calibration_vars["top_n"],
+            unit="枚", hint="スコア上位から選ぶ枚数（3以上）",
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 14))
+        FormField(
+            advanced.body, "解析間隔", app.calibration_vars["stride"],
+            unit="フレームごと", hint="1で全フレーム、5で5枚おき",
+        ).grid(row=0, column=1, sticky="ew", padx=10, pady=(0, 14))
+        FormField(
+            advanced.body, "ブレ判定しきい値", app.calibration_vars["blur_threshold"],
+            hint="小さいほどブレた画像も許容（0以上）",
+        ).grid(row=0, column=2, sticky="ew", padx=(10, 0), pady=(0, 14))
 
-    FormField(
-        advanced.body, "最小コーナー数", app.calibration_vars["min_corners"],
-        unit="個", hint="1フレームで必要な検出数（1以上）",
-    ).grid(row=1, column=0, sticky="ew", padx=(0, 10))
-    FormField(
-        advanced.body, "最大解析フレーム数", app.calibration_vars["max_frames"],
-        unit="枚", hint="0 で動画の最後まで解析",
-    ).grid(row=1, column=1, sticky="ew", padx=10)
-    FormField(
-        advanced.body, "低カバレッジ判定", app.calibration_vars["low_coverage"],
-        hint="0〜1（未満なら高次歪み k3 を固定）",
-    ).grid(row=1, column=2, sticky="ew", padx=(10, 0))
+        FormField(
+            advanced.body, "最小コーナー数", app.calibration_vars["min_corners"],
+            unit="個", hint="1フレームで必要な検出数（1以上）",
+        ).grid(row=1, column=0, sticky="ew", padx=(0, 10))
+        FormField(
+            advanced.body, "最大解析フレーム数", app.calibration_vars["max_frames"],
+            unit="枚", hint="0 で動画の最後まで解析",
+        ).grid(row=1, column=1, sticky="ew", padx=10)
+        FormField(
+            advanced.body, "低カバレッジ判定", app.calibration_vars["low_coverage"],
+            hint="0〜1（未満なら高次歪み k3 を固定）",
+        ).grid(row=1, column=2, sticky="ew", padx=(10, 0))
 
-    # ---- Card 3: Progress & log -----------------------------------------
-    progress_card = Card(
-        scroll,
-        title="進捗状況とログ",
-        number=3,
-    )
-    progress_card.grid(row=4, column=0, sticky="ew")
-    progress_card.body.columnconfigure(0, weight=1)
+        # ---- Card 3: Progress & log -----------------------------------------
+        progress_card = Card(
+            scroll,
+            title="進捗状況とログ",
+            number=3,
+        )
+        progress_card.grid(row=4, column=0, sticky="ew")
+        progress_card.body.columnconfigure(0, weight=1)
 
-    status_row = ctk.CTkFrame(progress_card.body, fg_color="transparent")
-    status_row.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-    status_row.columnconfigure(0, weight=1)
-    label(
-        status_row, app.status.get(), "body_bold", color=t.TEXT, textvariable=app.status,
-    ).grid(row=0, column=0, sticky="w")
-    app.percent_label = ctk.CTkLabel(
-        status_row, text="0%", font=t.fonts().subtitle, text_color=t.ACCENT_TEXT,
-    )
-    app.percent_label.grid(row=0, column=1, sticky="e")
+        status_row = ctk.CTkFrame(progress_card.body, fg_color="transparent")
+        status_row.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        status_row.columnconfigure(0, weight=1)
+        label(
+            status_row, app.status.get(), "body_bold", color=t.TEXT, textvariable=app.status,
+        ).grid(row=0, column=0, sticky="w")
+        app.percent_label = ctk.CTkLabel(
+            status_row, text="0%", font=t.fonts().subtitle, text_color=t.ACCENT_TEXT,
+        )
+        app.percent_label.grid(row=0, column=1, sticky="e")
 
-    app.progress_bar = ctk.CTkProgressBar(
-        progress_card.body, height=14, corner_radius=7,
-        fg_color=t.SURFACE_ALT, progress_color=t.ACCENT,
-    )
-    app.progress_bar.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-    app.progress_bar.set(max(0.0, min(1.0, app.calibration_progress.get() / 100.0)))
-    app.progress_mode = "determinate"
+        app.progress_bar = ctk.CTkProgressBar(
+            progress_card.body, height=14, corner_radius=7,
+            fg_color=t.SURFACE_ALT, progress_color=t.ACCENT,
+        )
+        app.progress_bar.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        app.progress_bar.set(max(0.0, min(1.0, app.calibration_progress.get() / 100.0)))
+        app.progress_mode = "determinate"
 
-    label(
-        progress_card.body, app.progress_detail.get(), "caption",
-        color=t.TEXT_SECONDARY, textvariable=app.progress_detail,
-    ).grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        label(
+            progress_card.body, app.progress_detail.get(), "caption",
+            color=t.TEXT_SECONDARY, textvariable=app.progress_detail,
+        ).grid(row=2, column=0, sticky="ew", pady=(0, 12))
 
-    app.log = ctk.CTkTextbox(
-        progress_card.body,
-        height=140,
-        corner_radius=t.RADIUS_CONTROL,
-        border_width=1,
-        border_color=t.BORDER,
-        fg_color=t.SURFACE_ALT,
-        text_color=t.TEXT_SECONDARY,
-        font=t.fonts().mono,
-        wrap="word",
-    )
-    app.log.grid(row=3, column=0, sticky="ew")
-    app.log.configure(state="disabled")
+        app.log = ctk.CTkTextbox(
+            progress_card.body,
+            height=140,
+            corner_radius=t.RADIUS_CONTROL,
+            border_width=1,
+            border_color=t.BORDER,
+            fg_color=t.SURFACE_ALT,
+            text_color=t.TEXT_SECONDARY,
+            font=t.fonts().mono,
+            wrap="word",
+        )
+        app.log.grid(row=3, column=0, sticky="ew")
+        app.log.configure(state="disabled")
+
+    if prewarm:
+        return
 
     # ---- Action bar -----------------------------------------------------
     app.run_button = app.set_action_bar(
@@ -254,6 +260,8 @@ def build_calibration_page(app: IntegratedApp) -> None:
         secondary=[("既存データを読み込む…", app._import_calibration_data)],
     )
     app.calibration_back_button = app.action_back_button
+    if app.is_calibrating:
+        set_calibration_busy(app, True)
 
 
 def append_log(app: IntegratedApp, text: str) -> None:

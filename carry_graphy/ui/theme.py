@@ -140,6 +140,19 @@ def fonts() -> Fonts:
     return _fonts
 
 
+_theme_applied = False
+
+
 def apply_global_theme() -> None:
-    ctk.set_appearance_mode("light")
-    ctk.set_default_color_theme("blue")
+    global _theme_applied
+    if not _theme_applied:
+        ctk.set_appearance_mode("light")
+        ctk.set_default_color_theme("blue")
+        _theme_applied = True
+    try:
+        from customtkinter.windows.widgets.core_rendering import DrawEngine
+
+        if DrawEngine.preferred_drawing_method == "circle_shapes":
+            DrawEngine.preferred_drawing_method = "polygon_shapes"
+    except Exception:
+        pass

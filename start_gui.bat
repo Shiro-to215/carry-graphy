@@ -25,12 +25,12 @@ if not exist "%VENV_PY%" (
 )
 
 rem --- 2. Verify dependencies (install if missing) ---
-"%VENV_PY%" -c "import tkinter, cv2, numpy" >nul 2>nul
+"%VENV_PY%" -c "import tkinter, cv2, numpy, customtkinter, tkinterdnd2" >nul 2>nul
 if errorlevel 1 (
     echo [setup] Missing packages detected. Installing requirements ...
     "%VENV_PY%" -m pip install -r requirements.txt
     if errorlevel 1 goto :fail
-    "%VENV_PY%" -c "import tkinter, cv2, numpy"
+    "%VENV_PY%" -c "import tkinter, cv2, numpy, customtkinter, tkinterdnd2"
     if errorlevel 1 goto :fail
 )
 

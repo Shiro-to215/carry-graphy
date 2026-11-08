@@ -4,7 +4,7 @@ Features:
 * Click to place up to 4 points (左下 → 右下 → 右上 → 左上).
 * Drag an existing point to reposition it (with live polygon and convexity feedback).
 * Magnifier loupe around the cursor while dragging or while hovering over the image.
-* Viewport-cropped rendering for constant-time zoom (up to 12x, crisp pixel mode at high zoom) and smooth pan.
+* Viewport-cropped rendering for constant-time zoom (up to 30x, crisp pixel mode at high zoom) and smooth pan.
 * Auto-fit when the canvas is resized at 100% zoom.
 """
 
@@ -27,7 +27,7 @@ MARKER_RADIUS_PX = 7
 LOUPE_SIZE_PX = 156
 LOUPE_SOURCE_RADIUS = 18  # +/- pixels in source image -> ~4.2x magnification on the source
 MIN_ZOOM_FACTOR = 0.5
-MAX_ZOOM_FACTOR = 12.0
+MAX_ZOOM_FACTOR = 30.0
 CRISP_SCALE_THRESHOLD = 2.5
 FRAME_INTERVAL_SEC = 0.014  # ~70 fps cap for interactive motion/zoom/pan
 

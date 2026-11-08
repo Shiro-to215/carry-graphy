@@ -257,11 +257,11 @@ def build_calibration_page(app: IntegratedApp, *, prewarm: bool = False) -> None
     app.run_button = app.set_action_bar(
         primary=("キャリブレーションを開始  ▶", app._start_calibration),
         back=("←  ボード作成へ戻る", app._build_board_page),
-        secondary=[("既存データを読み込む…", app._import_calibration_data)],
+        secondary=[("解析を中断", app._cancel_calibration)],
     )
+    app.cancel_button = getattr(app, "action_secondary_0", None)
     app.calibration_back_button = app.action_back_button
-    if app.is_calibrating:
-        set_calibration_busy(app, True)
+    set_calibration_busy(app, app.is_calibrating)
 
 
 def append_log(app: IntegratedApp, text: str) -> None:
@@ -275,11 +275,27 @@ def append_log(app: IntegratedApp, text: str) -> None:
 
 def set_calibration_busy(app: IntegratedApp, busy: bool) -> None:
     app.is_calibrating = busy
-    for attr in ("run_button", "calibration_back_button", "load_calibration_button", "action_secondary_0"):
+    for attr in ("run_button", "calibration_back_button", "load_calibration_button"):
         widget = getattr(app, attr, None)
         if widget is not None and widget.winfo_exists():
             set_button_enabled(widget, not busy)
+    if hasattr(app, "cancel_button") and app.cancel_button is not None and app.cancel_button.winfo_exists():
+        set_button_enabled(app.cancel_button, busy)
     app.refresh_sidebar()
+
+
+def cancel_calibration(app: IntegratedApp) -> None:
+    if not app.is_calibrating or app.calibration_process is None:
+        return
+    app.calibration_cancelled = True
+    if hasattr(app, "cancel_button") and app.cancel_button is not None and app.cancel_button.winfo_exists():
+        set_button_enabled(app.cancel_button, False)
+    append_log(app, "解析の中断を要求しました…")
+    app.status.set("解析を中断しています…")
+    try:
+        app.calibration_process.kill()
+    except OSError:
+        pass
 
 
 def start_calibration(app: IntegratedApp) -> None:
@@ -320,6 +336,7 @@ def start_calibration(app: IntegratedApp) -> None:
 def run_calibration_process(app: IntegratedApp, command: list[str], output: Path) -> None:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
+        app.calibration_cancelled = False
         with subprocess.Popen(
             command,
             cwd=APP_DIR,
@@ -331,6 +348,7 @@ def run_calibration_process(app: IntegratedApp, command: list[str], output: Path
             bufsize=1,
             creationflags=creationflags,
         ) as process:
+            app.calibration_process = process
             assert process.stdout is not None
             for raw_line in process.stdout:
                 line = raw_line.rstrip("\r\n")
@@ -346,7 +364,10 @@ def run_calibration_process(app: IntegratedApp, command: list[str], output: Path
             return_code = process.wait()
         app.messages.put(("calibration_done", (return_code, "", "", output)))
     except Exception as exc:
-        app.messages.put(("calibration_error", str(exc)))
+        if not getattr(app, "calibration_cancelled", False):
+            app.messages.put(("calibration_error", str(exc)))
+    finally:
+        app.calibration_process = None
 
 
 def update_calibration_progress(app: IntegratedApp, progress: dict[str, object]) -> None:
@@ -390,6 +411,20 @@ def handle_calibration_done(
         app.progress_bar.configure(mode="determinate")
         app.progress_mode = "determinate"
     set_calibration_busy(app, False)
+
+    if getattr(app, "calibration_cancelled", False):
+        app.calibration_cancelled = False
+        app.status.set("解析を中断しました。")
+        app.progress_detail.set("解析が中断されました。動画または設定を確認して再開してください。")
+        app.calibration_progress.set(0.0)
+        if hasattr(app, "percent_label") and app.percent_label.winfo_exists():
+            app.percent_label.configure(text="0%")
+        if hasattr(app, "progress_bar") and app.progress_bar.winfo_exists():
+            app.progress_bar.set(0.0)
+        append_log(app, "キャリブレーション解析を中断しました。")
+        app.toast.show("解析を中断しました。", title="中断", tone="warning")
+        return
+
     output_text = "\n".join(part.strip() for part in (stdout, stderr) if part.strip())
     append_log(app, output_text or "処理が終了しました。")
     if return_code != 0:

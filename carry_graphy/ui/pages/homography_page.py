@@ -54,9 +54,9 @@ def _refresh_homography_summary(app: IntegratedApp) -> None:
 
     quality = rmse_quality(rmse)
     badge_text, badge_tone = {
-        "good": ("精度 良好 (< 0.5 px)", "success"),
-        "fair": ("精度 標準 (< 1.0 px)", "info"),
-        "poor": ("誤差やや大 (≥ 1.0 px)", "warning"),
+        "good": ("精度 良好 (< 1.5 px)", "success"),
+        "fair": ("精度 標準 (< 2.0 px)", "info"),
+        "poor": ("誤差やや大 (≥ 2.0 px)", "warning"),
         None: ("既存データ", "info"),
     }[quality]
 

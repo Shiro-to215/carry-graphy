@@ -165,8 +165,8 @@ def rmse_quality(rmse: object) -> str | None:
     """Classify a reprojection error: 'good', 'fair', 'poor' or None if unknown."""
     if not isinstance(rmse, (int, float, np.number)) or not np.isfinite(rmse):
         return None
-    if rmse < 0.5:
+    if rmse < 1.5:
         return "good"
-    if rmse < 1.0:
+    if rmse < 2.0:
         return "fair"
     return "poor"

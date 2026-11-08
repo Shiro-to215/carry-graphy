@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import queue
+import subprocess
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog
@@ -26,6 +27,7 @@ from .pages.board_page import build_board_page, create_board
 from .pages.calibration_page import (
     append_log,
     build_calibration_page,
+    cancel_calibration,
     handle_calibration_done,
     import_calibration_data,
     run_calibration_process,
@@ -141,6 +143,9 @@ class IntegratedApp:
         self._poll_after_id: str | None = None
         self.current_step = 0
         self.is_calibrating = False
+        self.calibration_process: subprocess.Popen[str] | None = None
+        self.calibration_cancelled = False
+        self.cancel_button: ctk.CTkButton | None = None
         self.advanced_calibration_open = bool(saved.get("advanced_calibration_open", False))
 
         # ---- Form variables (defaults merged with saved settings) --------
@@ -600,6 +605,9 @@ class IntegratedApp:
 
     def _start_calibration(self) -> None:
         start_calibration(self)
+
+    def _cancel_calibration(self) -> None:
+        cancel_calibration(self)
 
     def _run_calibration_process(self, command: list[str], output: Path) -> None:
         run_calibration_process(self, command, output)

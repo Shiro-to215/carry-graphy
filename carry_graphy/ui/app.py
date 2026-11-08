@@ -167,7 +167,7 @@ class IntegratedApp:
             "image": "",
             "width": "",
             "height": "",
-            "output": str(DEFAULT_RESULTS_DIR / "homography_matrix.npy"),
+            "output": str(DEFAULT_RESULTS_DIR / "homography" / "homography_matrix.npy"),
         }
         saved_cal = get_section(saved, "calibration")
         saved_board = get_section(saved, "board")

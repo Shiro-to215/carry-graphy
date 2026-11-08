@@ -259,7 +259,7 @@ def build_homography_page(app: IntegratedApp, *, prewarm: bool = False) -> None:
             memory=app.dir_memory,
             memory_key="homography_output",
             dnd_enabled=True,
-            hint="既定では「統合結果/homography_matrix.npy」（および .txt）に保存されます。",
+            hint="既定では「統合結果/homography/homography_matrix.npy」（および .txt）に保存されます。",
             on_error=lambda msg: app.toast.show(msg, title="ドロップできません", tone="warning"),
         ).grid(row=0, column=0, sticky="ew")
 

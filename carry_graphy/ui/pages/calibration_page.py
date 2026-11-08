@@ -374,6 +374,14 @@ def update_calibration_progress(app: IntegratedApp, progress: dict[str, object])
     app.progress_detail.set(f"{progress_text}　{detail} {phase_text}".rstrip())
 
 
+def _derive_homography_output_path(location: Path, *, is_file: bool = False) -> Path:
+    """Derive default homography output path (.npy) in a 'homography' folder beside calibration."""
+    resolved = location.resolve()
+    calib_dir = resolved.parent if is_file else resolved
+    base_dir = calib_dir.parent if calib_dir.parent != calib_dir else calib_dir
+    return base_dir / "homography" / "homography_matrix.npy"
+
+
 def handle_calibration_done(
     app: IntegratedApp, return_code: int, stdout: str, stderr: str, output: Path
 ) -> None:
@@ -398,6 +406,8 @@ def handle_calibration_done(
     append_log(app, f"TXT出力: {summary_path}")
     rmse = app.calibration_data.get("rmse")
     rmse_msg = f"（再投影誤差 {float(rmse):.4f} px）" if isinstance(rmse, (int, float)) else ""
+    homography_out = _derive_homography_output_path(Path(output), is_file=False)
+    app.homography_vars["output"].set(str(homography_out))
     app._build_homography_page()
     app.toast.show(
         f"カメラ行列を保存しました {rmse_msg}",
@@ -431,6 +441,8 @@ def import_calibration_path(app: IntegratedApp, path: Path) -> None:
     app.calibration_data = data
     app.calibration_import_var.set(str(path))
     app.dir_memory.remember("calibration_import", path)
+    homography_out = _derive_homography_output_path(path, is_file=True)
+    app.homography_vars["output"].set(str(homography_out))
     app.save_settings()
     app._build_homography_page()
     app.toast.show(

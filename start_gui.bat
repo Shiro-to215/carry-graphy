@@ -9,8 +9,21 @@ set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 set "VENV_PYW=%VENV_DIR%\Scripts\pythonw.exe"
 set "STAMP_FILE=%VENV_DIR%\.requirements.stamp"
 
-rem --- 1. Create the virtual environment on first run ---
+rem --- 1. Check and create the virtual environment ---
+set "NEED_VENV_CREATE=0"
 if not exist "%VENV_PY%" (
+    set "NEED_VENV_CREATE=1"
+) else (
+    "%VENV_PY%" -c "import sys" >nul 2>nul
+    if errorlevel 1 (
+        echo [warning] Existing virtual environment is broken or Python base path changed.
+        echo [setup] Re-creating virtual environment ...
+        rmdir /s /q "%VENV_DIR%" >nul 2>nul
+        set "NEED_VENV_CREATE=1"
+    )
+)
+
+if "%NEED_VENV_CREATE%"=="1" (
     echo [setup] Creating virtual environment in %VENV_DIR% ...
     where python >nul 2>nul
     if errorlevel 1 (

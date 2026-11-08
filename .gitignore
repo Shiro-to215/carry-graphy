@@ -1,0 +1,15 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Temporary test files
+__nonexistent_test.json

@@ -5,14 +5,16 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tkinter as tk
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import customtkinter as ctk
 import numpy as np
 
-from ...core.homography import format_matrix
+from ...core.homography import format_matrix, warp_full_image_for_preview
 from .. import theme as t
+from ..imaging import fit_image, to_photo
 from ..widgets import Card, StatTile, button, label
 
 if TYPE_CHECKING:
@@ -71,10 +73,45 @@ def build_completion_page(
         size="sm",
     ).grid(row=0, column=2, rowspan=2, padx=(0, 20), pady=18)
 
+    current_row = 1
+
+    # ---- Card 0: Transformed Image Preview (if available) ---------------
+    if app.undistorted_image is not None and len(app.points) == 4 and not loaded:
+        w_m, h_m = app.current_plane_size
+        warped = warp_full_image_for_preview(app.undistorted_image, app.points, w_m, h_m)
+        if warped is not None and warped.size > 0:
+            preview_card = Card(
+                scroll,
+                title="ホモグラフィ変換プレビュー",
+                description="選択した四隅の実寸比率に基づき、画像全体を正面視点へ透視変換したプレビューです（ファイル出力はされません）。",
+            )
+            preview_card.grid(row=current_row, column=0, sticky="ew", pady=(0, t.GAP))
+            preview_card.body.columnconfigure(0, weight=1)
+
+            preview = fit_image(warped, 880, 360)
+            photo = to_photo(preview, app.root)
+            if photo is not None:
+                app.homography_preview_photo = photo
+                box = ctk.CTkFrame(
+                    preview_card.body,
+                    fg_color=t.SURFACE_ALT,
+                    corner_radius=t.RADIUS_CONTROL,
+                    border_width=1,
+                    border_color=t.BORDER,
+                )
+                box.grid(row=0, column=0, sticky="ew")
+                box.columnconfigure(0, weight=1)
+
+                img_lbl = tk.Label(box, image=photo, bg=t.SURFACE_ALT)
+                img_lbl.grid(row=0, column=0, padx=12, pady=12)
+
+            current_row += 1
+
     # ---- Card 1: Output files -------------------------------------------
     files_card = Card(scroll, title="出力ファイルと設定情報")
-    files_card.grid(row=1, column=0, sticky="ew", pady=(0, t.GAP))
+    files_card.grid(row=current_row, column=0, sticky="ew", pady=(0, t.GAP))
     files_card.body.columnconfigure(0, weight=1)
+    current_row += 1
 
     path_label = "読込元ファイル (.npy / .npz)" if loaded else "ホモグラフィ行列ファイル (.npy)"
     StatTile(
@@ -99,7 +136,7 @@ def build_completion_page(
         title="変換行列 H（3 × 3）",
         description="補正後画像のピクセル座標 (x, y, 1)ᵀ に左から掛けて正規化すると、左下原点の平面メートル座標 (X, Y) が得られます。",
     )
-    matrix_card.grid(row=2, column=0, sticky="ew")
+    matrix_card.grid(row=current_row, column=0, sticky="ew")
     matrix_card.body.columnconfigure(0, weight=1)
 
     matrix_text = format_matrix(matrix)

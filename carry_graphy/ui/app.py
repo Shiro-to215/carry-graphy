@@ -131,6 +131,7 @@ class IntegratedApp:
         self.viewport_height = 500
         self.photo: tk.PhotoImage | None = None
         self.board_preview_photo: tk.PhotoImage | None = None
+        self.homography_preview_photo: tk.PhotoImage | None = None
         self.board_generated_settings: tuple[int, int, float, float, str, int] | None = None
         self.point_canvas: PointCanvas | None = None
         self._cached_point_canvas: PointCanvas | None = None

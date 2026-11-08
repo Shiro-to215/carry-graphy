@@ -264,3 +264,69 @@ def format_homography_summary(matrix: np.ndarray, metadata: dict[str, Any]) -> s
 
 def format_matrix(matrix: np.ndarray, precision: str = ".8g") -> str:
     return "\n".join("[ " + ",  ".join(f"{value:{precision}}" for value in row) + " ]" for row in matrix)
+
+
+def warp_full_image_for_preview(
+    image: np.ndarray,
+    points: list[tuple[float, float]],
+    width_m: float,
+    height_m: float,
+    *,
+    max_dimension: int = 2400,
+) -> np.ndarray | None:
+    """Warp the full image according to homography defined by four corners.
+
+    The four points correspond to: Left-Bottom, Right-Bottom, Right-Top, Left-Top.
+    The output encompasses the entire transformed original image without clipping.
+    """
+    if len(points) != 4 or width_m <= 0 or height_m <= 0 or image.size == 0:
+        return None
+    try:
+        p_lb, p_rb, p_rt, p_lt = points
+        w_px = float(np.linalg.norm(np.array(p_rb) - np.array(p_lb)))
+        if w_px <= 0:
+            return None
+        h_px = w_px * (height_m / width_m)
+
+        src_pts = np.float32([p_lb, p_rb, p_rt, p_lt])
+        dst_pts = np.float32([[0, h_px], [w_px, h_px], [w_px, 0], [0, 0]])
+        h0 = cv2.getPerspectiveTransform(src_pts, dst_pts)
+        if h0 is None or not np.isfinite(h0).all():
+            return None
+
+        img_h, img_w = image.shape[:2]
+        corners = np.float32([[0, 0], [img_w, 0], [img_w, img_h], [0, img_h]]).reshape(-1, 1, 2)
+        transformed = cv2.perspectiveTransform(corners, h0)
+        if not np.isfinite(transformed).all():
+            return None
+
+        x_min, y_min = np.min(transformed[:, 0, :], axis=0)
+        x_max, y_max = np.max(transformed[:, 0, :], axis=0)
+
+        out_w = int(np.ceil(x_max - x_min))
+        out_h = int(np.ceil(y_max - y_min))
+        if out_w <= 0 or out_h <= 0 or out_w > 20000 or out_h > 20000:
+            return None
+
+        translation = np.array([[1.0, 0.0, -x_min], [0.0, 1.0, -y_min], [0.0, 0.0, 1.0]], dtype=np.float64)
+        h_total = translation @ h0
+
+        max_dim = max(out_w, out_h)
+        if max_dim > max_dimension:
+            scale = max_dimension / float(max_dim)
+            s_mat = np.array([[scale, 0.0, 0.0], [0.0, scale, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+            h_total = s_mat @ h_total
+            out_w = max(1, int(round(out_w * scale)))
+            out_h = max(1, int(round(out_h * scale)))
+
+        warped = cv2.warpPerspective(
+            image,
+            h_total,
+            (out_w, out_h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(28, 28, 30),
+        )
+        return warped
+    except Exception:
+        return None
